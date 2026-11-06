@@ -1,0 +1,8 @@
+AI 记账需求摘要（已实现于本仓库）
+
+1. AI 聊天方式记账（写入/删除需对话确认）
+2. 后端 Python + MySQL：用户、记账表、事项字典；LangChain + 智谱
+3. 前端 Vite+Vue+TS：聊天 / 时间线 / 我的；适配移动端与 PC
+4. 代码目录：abkbackend、abkfrontend；文档见 docs/ 与 README.md
+
+阶段规划来源：https://chat.deepseek.com/share/sxpbjuhjmwc28pieet
