@@ -53,3 +53,22 @@ export interface StatsOut {
   total_income: number
   total_expense: number
 }
+
+export interface BreakdownSlice {
+  category_code: string
+  category: string
+  count: number
+  amount_yuan: number
+  percent: number
+}
+
+export interface BreakdownOut {
+  period: 'week' | 'month' | 'year'
+  label: string
+  start_date: string
+  end_date: string
+  total_income: number
+  total_expense: number
+  income: BreakdownSlice[]
+  expense: BreakdownSlice[]
+}

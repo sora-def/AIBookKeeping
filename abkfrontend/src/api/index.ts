@@ -1,5 +1,5 @@
 import { api, streamChat } from './http'
-import type { ChatMessage, PendingAction, StatsOut, TimelineItem, User } from '../types'
+import type { BreakdownOut, ChatMessage, PendingAction, StatsOut, TimelineItem, User } from '../types'
 
 export { streamChat }
 
@@ -46,6 +46,22 @@ export function fetchTimeline(limit = 100) {
   return api<TimelineItem[]>(`/api/records/timeline?limit=${limit}`)
 }
 
+export function deleteRecordsBatch(ids: number[]) {
+  return api<{
+    ok: boolean
+    deleted: number
+    amount_yuan: number
+    ids: number[]
+  }>('/api/records/batch-delete', {
+    method: 'POST',
+    body: JSON.stringify({ ids }),
+  })
+}
+
 export function fetchStats(period: 'week' | 'month' | 'year') {
   return api<StatsOut>(`/api/records/stats?period=${period}`)
+}
+
+export function fetchBreakdown(period: 'week' | 'month' | 'year') {
+  return api<BreakdownOut>(`/api/records/breakdown?period=${period}`)
 }

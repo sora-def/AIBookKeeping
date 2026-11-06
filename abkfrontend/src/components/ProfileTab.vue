@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
-import { fetchStats } from '../api'
+import { computed, onMounted, ref, watch } from 'vue'
+import { fetchBreakdown, fetchStats } from '../api'
 import { useAuth } from '../composables/useAuth'
-import type { StatsOut } from '../types'
+import type { BreakdownOut, StatsOut } from '../types'
 import LineChart from './LineChart.vue'
+import PieChart from './PieChart.vue'
 
 const { user, logout } = useAuth()
 const error = ref('')
@@ -12,6 +13,8 @@ const refreshing = ref(false)
 const week = ref<StatsOut | null>(null)
 const month = ref<StatsOut | null>(null)
 const year = ref<StatsOut | null>(null)
+const dashPeriod = ref<'week' | 'month' | 'year'>('month')
+const breakdown = ref<BreakdownOut | null>(null)
 
 const cards = [
   { key: 'week', title: '本周', pick: () => week.value },
@@ -19,20 +22,34 @@ const cards = [
   { key: 'year', title: '本年', pick: () => year.value },
 ] as const
 
+const periodTabs = [
+  { key: 'week' as const, label: '本周' },
+  { key: 'month' as const, label: '本月' },
+  { key: 'year' as const, label: '本年' },
+]
+
+const dashLabel = computed(() => breakdown.value?.label || '本月')
+
+async function loadBreakdown() {
+  breakdown.value = await fetchBreakdown(dashPeriod.value)
+}
+
 async function load() {
   const first = !week.value && !month.value && !year.value
   if (first) loading.value = true
   else refreshing.value = true
   error.value = ''
   try {
-    const [w, m, y] = await Promise.all([
+    const [w, m, y, b] = await Promise.all([
       fetchStats('week'),
       fetchStats('month'),
       fetchStats('year'),
+      fetchBreakdown(dashPeriod.value),
     ])
     week.value = w
     month.value = m
     year.value = y
+    breakdown.value = b
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : '统计加载失败'
   } finally {
@@ -40,6 +57,14 @@ async function load() {
     refreshing.value = false
   }
 }
+
+watch(dashPeriod, async () => {
+  try {
+    await loadBreakdown()
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : '仪表盘加载失败'
+  }
+})
 
 onMounted(load)
 
@@ -94,14 +119,52 @@ const genderLabel: Record<string, string> = {
     <p v-if="loading && !week" class="muted">加载中…</p>
     <p v-if="error" class="error-text">{{ error }}</p>
 
+    <div class="card chart-card chart-rise dash-card">
+      <div class="dash-head">
+        <div>
+          <strong>分类仪表盘</strong>
+          <div class="muted" style="margin-top:4px;">{{ dashLabel }}各项目占比</div>
+        </div>
+        <div class="dash-tabs" role="tablist" aria-label="仪表盘周期">
+          <button
+            v-for="tab in periodTabs"
+            :key="tab.key"
+            class="dash-tab"
+            type="button"
+            role="tab"
+            :aria-selected="dashPeriod === tab.key"
+            :class="{ active: dashPeriod === tab.key }"
+            @click="dashPeriod = tab.key"
+          >
+            {{ tab.label }}
+          </button>
+        </div>
+      </div>
+
+      <div v-if="breakdown" class="dash-grid">
+        <PieChart
+          title="收入构成"
+          tone="income"
+          :total="breakdown.total_income"
+          :slices="breakdown.income"
+        />
+        <PieChart
+          title="支出构成"
+          tone="expense"
+          :total="breakdown.total_expense"
+          :slices="breakdown.expense"
+        />
+      </div>
+    </div>
+
     <div
       v-for="(card, index) in cards"
       :key="card.key"
       class="card chart-card chart-rise"
-      :style="{ animationDelay: `${index * 90}ms` }"
+      :style="{ animationDelay: `${(index + 1) * 90}ms` }"
     >
       <div style="display:flex;justify-content:space-between;align-items:center;">
-        <strong>{{ card.title }}</strong>
+        <strong>{{ card.title }}趋势</strong>
       </div>
       <LineChart v-if="card.pick()" :points="card.pick()!.points" />
       <div v-if="card.pick()" class="stats-row">

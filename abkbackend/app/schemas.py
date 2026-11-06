@@ -64,6 +64,10 @@ class RecordCreate(BaseModel):
     note: str = Field(default="", max_length=255)
 
 
+class RecordBatchDelete(BaseModel):
+    ids: list[int] = Field(min_length=1, max_length=500)
+
+
 class RecordOut(BaseModel):
     id: int
     record_date: date
@@ -107,6 +111,25 @@ class StatsOut(BaseModel):
     points: list[StatsPoint]
     total_income: float
     total_expense: float
+
+
+class BreakdownSlice(BaseModel):
+    category_code: str
+    category: str
+    count: int
+    amount_yuan: float
+    percent: float
+
+
+class BreakdownOut(BaseModel):
+    period: Literal["week", "month", "year"]
+    label: str
+    start_date: str
+    end_date: str
+    total_income: float
+    total_expense: float
+    income: list[BreakdownSlice]
+    expense: list[BreakdownSlice]
 
 
 class ConversationOut(BaseModel):

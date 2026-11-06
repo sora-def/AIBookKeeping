@@ -108,6 +108,8 @@ def detect_intent(text: str) -> str:
         "花费",
         "请客",
         "收入",
+        "进账",
+        "到账",
         "报销",
         "工资",
         "买了",
@@ -115,11 +117,16 @@ def detect_intent(text: str) -> str:
         "收了",
         "记账",
         "买",
+        "卖",
+        "挣了",
+        "赚了",
         "发了",
         "bought",
         "spent",
         "paid",
         "salary",
+        "sold",
+        "earned",
     )
     if any(k in t for k in delete_keys):
         return "delete"

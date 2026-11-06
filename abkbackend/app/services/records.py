@@ -115,6 +115,84 @@ def delete_record(db: Session, user_id: int, record_id: int) -> dict | None:
     return payload
 
 
+def delete_records_batch(db: Session, user_id: int, record_ids: list[int]) -> dict:
+    """按 ID 批量删除当前用户的记账。"""
+    ids = sorted({int(item) for item in record_ids if int(item) > 0})
+    if not ids:
+        return {"ok": True, "deleted": 0, "amount_yuan": 0.0, "ids": []}
+    rows = list(
+        db.scalars(
+            select(Record).where(Record.user_id == user_id, Record.id.in_(ids))
+        ).all()
+    )
+    deleted_ids = [row.id for row in rows]
+    total_cents = sum(int(row.amount_cents) for row in rows)
+    for row in rows:
+        db.delete(row)
+    db.commit()
+    return {
+        "ok": True,
+        "deleted": len(deleted_ids),
+        "amount_yuan": cents_to_yuan(total_cents),
+        "ids": deleted_ids,
+    }
+
+
+def delete_records_batch(db: Session, user_id: int, record_ids: list[int]) -> dict:
+    """按 ID 批量删除当前用户的记账。"""
+    ids = sorted({int(item) for item in record_ids if int(item) > 0})
+    if not ids:
+        return {"ok": True, "deleted": 0, "amount_yuan": 0.0, "ids": []}
+    rows = list(
+        db.scalars(
+            select(Record).where(Record.user_id == user_id, Record.id.in_(ids))
+        ).all()
+    )
+    deleted_ids = [row.id for row in rows]
+    total_cents = sum(int(row.amount_cents) for row in rows)
+    for row in rows:
+        db.delete(row)
+    db.commit()
+    return {
+        "ok": True,
+        "deleted": len(deleted_ids),
+        "amount_yuan": cents_to_yuan(total_cents),
+        "ids": deleted_ids,
+    }
+
+
+def clear_records(
+    db: Session,
+    user_id: int,
+    *,
+    record_type: str,
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> dict:
+    """按类型（及可选日期范围）批量删除当前用户记账。"""
+    if record_type not in ("income", "expense"):
+        raise ValueError("record_type 必须是 income 或 expense")
+    filters = [Record.user_id == user_id, Record.record_type == record_type]
+    if start_date is not None:
+        filters.append(Record.record_date >= start_date)
+    if end_date is not None:
+        filters.append(Record.record_date <= end_date)
+    rows = list(db.scalars(select(Record).where(and_(*filters))).all())
+    count = len(rows)
+    total_cents = sum(int(r.amount_cents) for r in rows)
+    for row in rows:
+        db.delete(row)
+    db.commit()
+    return {
+        "ok": True,
+        "record_type": record_type,
+        "deleted": count,
+        "amount_yuan": cents_to_yuan(total_cents),
+        "start_date": start_date.isoformat() if start_date else None,
+        "end_date": end_date.isoformat() if end_date else None,
+    }
+
+
 def get_record(db: Session, user_id: int, record_id: int) -> dict | None:
     record = db.get(Record, record_id)
     if record is None or record.user_id != user_id:
@@ -541,6 +619,54 @@ def answer_stats(db: Session, user_id: int, text: str) -> str | None:
         return None
     start, end, label = period
     return format_range_summary(db, user_id, start, end, label)
+
+
+def period_date_range(period: str, today: date | None = None) -> tuple[date, date, str]:
+    today = today or date.today()
+    if period == "week":
+        start = today - timedelta(days=today.weekday())
+        end = start + timedelta(days=6)
+        return start, end, "本周"
+    if period == "year":
+        return date(today.year, 1, 1), date(today.year, 12, 31), f"{today.year}年"
+    last = monthrange(today.year, today.month)[1]
+    return date(today.year, today.month, 1), date(today.year, today.month, last), f"{today.year}年{today.month}月"
+
+
+def build_category_breakdown(db: Session, user_id: int, period: str) -> dict:
+    """按分类汇总收入/支出，供仪表盘饼图使用。"""
+    start, end, label = period_date_range(period)
+    data = summarize_stats(db, user_id, start=start, end=end, label=label)
+
+    def slices(items: list[dict]) -> list[dict]:
+        total = sum(float(item["amount_yuan"]) for item in items) or 0.0
+        out: list[dict] = []
+        for item in items:
+            amount = round(float(item["amount_yuan"]), 2)
+            pct = round(amount * 100 / total, 1) if total > 0 else 0.0
+            out.append(
+                {
+                    "category_code": item["category_code"],
+                    "category": item["category"],
+                    "count": int(item["count"]),
+                    "amount_yuan": amount,
+                    "percent": pct,
+                }
+            )
+        return out
+
+    income = slices(data["income"])
+    expense = slices(data["expense"])
+    return {
+        "period": period,
+        "label": label,
+        "start_date": start.isoformat(),
+        "end_date": end.isoformat(),
+        "total_income": round(sum(item["amount_yuan"] for item in income), 2),
+        "total_expense": round(sum(item["amount_yuan"] for item in expense), 2),
+        "income": income,
+        "expense": expense,
+    }
 
 
 def build_stats(db: Session, user_id: int, period: str) -> dict:

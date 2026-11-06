@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
-import { fetchTimeline } from '../api'
+import { deleteRecordsBatch, fetchTimeline } from '../api'
 import type { TimelineItem } from '../types'
 
 const emit = defineEmits<{ compose: [] }>()
@@ -8,6 +8,9 @@ const emit = defineEmits<{ compose: [] }>()
 const items = ref<TimelineItem[]>([])
 const loading = ref(false)
 const refreshing = ref(false)
+const selecting = ref(false)
+const selected = ref<Set<number>>(new Set())
+const deleting = ref(false)
 const error = ref('')
 const scrollEl = ref<HTMLElement | null>(null)
 const focusKey = ref('')
@@ -95,6 +98,20 @@ const monthLabel = computed(() => {
 const monthIncome = computed(() => monthTotals.value.get(activeKey.value)?.income ?? 0)
 const monthExpense = computed(() => monthTotals.value.get(activeKey.value)?.expense ?? 0)
 
+const monthItems = computed(() =>
+  items.value.filter((row) => String(row.record_date).slice(0, 7) === activeKey.value),
+)
+
+const selectedCount = computed(() => selected.value.size)
+
+const selectedAmount = computed(() => {
+  let total = 0
+  for (const row of items.value) {
+    if (selected.value.has(row.id)) total += row.amount_yuan
+  }
+  return total
+})
+
 let monthMarks: { ym: string; top: number }[] = []
 let scrollRaf = 0
 let resizeObserver: ResizeObserver | null = null
@@ -164,8 +181,47 @@ function iconOf(name: string) {
   return ICONS[name] || { bg: '#8a8175', mark: (name || '记').slice(0, 1) }
 }
 
+function isSelected(id: number) {
+  return selected.value.has(id)
+}
+
+function toggleSelect(id: number) {
+  if (!selecting.value) return
+  const next = new Set(selected.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  selected.value = next
+}
+
+function startSelect() {
+  selecting.value = true
+  selected.value = new Set()
+  error.value = ''
+}
+
+function cancelSelect() {
+  selecting.value = false
+  selected.value = new Set()
+}
+
+function selectAllMonth(recordType?: 'income' | 'expense') {
+  const next = new Set(selected.value)
+  for (const row of monthItems.value) {
+    if (!recordType || row.record_type === recordType) next.add(row.id)
+  }
+  selected.value = next
+  if (!selecting.value) selecting.value = true
+}
+
 watch(days, () => {
   void nextTick(bindMonthWatch)
+})
+
+watch(activeKey, () => {
+  if (!selecting.value) return
+  // 换月后去掉不在列表里的选中项
+  const valid = new Set(items.value.map((row) => row.id))
+  selected.value = new Set([...selected.value].filter((id) => valid.has(id)))
 })
 
 onMounted(load)
@@ -174,6 +230,7 @@ onActivated(() => {
 })
 onDeactivated(unbindMonthWatch)
 onBeforeUnmount(unbindMonthWatch)
+
 async function load(refresh = false) {
   if (refresh) refreshing.value = true
   else loading.value = true
@@ -183,6 +240,8 @@ async function load(refresh = false) {
     if (!refresh) {
       focusKey.value = items.value[0] ? String(items.value[0].record_date).slice(0, 7) : ''
     }
+    const valid = new Set(items.value.map((row) => row.id))
+    selected.value = new Set([...selected.value].filter((id) => valid.has(id)))
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : '加载失败'
   } finally {
@@ -192,21 +251,42 @@ async function load(refresh = false) {
 }
 
 async function reload() {
-  if (loading.value || refreshing.value) return
+  if (loading.value || refreshing.value || deleting.value) return
   await load(true)
+}
+
+async function deleteSelected() {
+  if (!selectedCount.value || deleting.value) return
+  const ok = window.confirm(
+    `确定删除选中的 ${selectedCount.value} 笔吗？\n合计 ${money(selectedAmount.value)} 元，此操作不可撤销。`,
+  )
+  if (!ok) return
+  deleting.value = true
+  error.value = ''
+  try {
+    const result = await deleteRecordsBatch([...selected.value])
+    selected.value = new Set()
+    selecting.value = false
+    await load(true)
+    if (result.deleted === 0) error.value = '没有删除任何记录'
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : '删除失败'
+  } finally {
+    deleting.value = false
+  }
 }
 
 defineExpose({ reload })
 </script>
 
 <template>
-  <div class="panel tl">
+  <div class="panel tl" :class="{ 'tl-selecting': selecting }">
     <header class="tl-hero">
       <button
         class="tl-refresh"
         type="button"
         aria-label="刷新时间线"
-        :disabled="loading || refreshing"
+        :disabled="loading || refreshing || deleting"
         @click="reload"
       >
         <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" :class="{ spinning: refreshing }">
@@ -241,10 +321,43 @@ defineExpose({ reload })
       </div>
     </div>
 
+    <div class="tl-manage">
+      <template v-if="!selecting">
+        <button
+          class="tl-clear"
+          type="button"
+          :disabled="loading || refreshing || !items.length"
+          @click="startSelect"
+        >
+          选择清除
+        </button>
+      </template>
+      <template v-else>
+        <button class="tl-clear ghost" type="button" :disabled="deleting" @click="selectAllMonth('income')">
+          选本月收入
+        </button>
+        <button class="tl-clear ghost" type="button" :disabled="deleting" @click="selectAllMonth('expense')">
+          选本月支出
+        </button>
+        <button
+          class="tl-clear"
+          type="button"
+          :disabled="deleting || selectedCount === 0"
+          @click="deleteSelected"
+        >
+          {{ deleting ? '删除中…' : `删除所选(${selectedCount})` }}
+        </button>
+        <button class="tl-clear ghost" type="button" :disabled="deleting" @click="cancelSelect">
+          取消
+        </button>
+      </template>
+    </div>
+
     <div ref="scrollEl" class="tl-scroll" @scroll.passive="onTimelineScroll">
       <p v-if="loading && !days.length" class="muted" style="text-align:center;">加载中…</p>
       <p v-if="error" class="error-text">{{ error }}</p>
       <div v-if="!loading && !days.length" class="empty">还没有记录。点上方 + 去记一笔。</div>
+      <p v-if="selecting && days.length" class="tl-select-hint muted">点条目勾选要清除的收入/支出，可跨日期选择。</p>
 
       <div
         v-for="day in days"
@@ -254,7 +367,15 @@ defineExpose({ reload })
         :data-month-start="day.monthStart ? '' : undefined"
       >
         <div class="tl-side left">
-          <div v-for="row in day.incomes" :key="row.id" class="tl-entry">
+          <button
+            v-for="row in day.incomes"
+            :key="row.id"
+            class="tl-entry"
+            :class="{ selectable: selecting, selected: isSelected(row.id) }"
+            type="button"
+            @click="selecting ? toggleSelect(row.id) : undefined"
+          >
+            <span v-if="selecting" class="tl-check" aria-hidden="true">{{ isSelected(row.id) ? '✓' : '' }}</span>
             <div class="tl-amount">{{ money(row.amount_yuan) }}</div>
             <div class="tl-meta">
               <span>{{ row.category_name_zh || '一般' }}</span>
@@ -263,14 +384,22 @@ defineExpose({ reload })
               </i>
             </div>
             <div v-if="row.note" class="tl-note">{{ row.note }}</div>
-          </div>
+          </button>
         </div>
         <div class="tl-spine">
           <span>{{ dateLabel(day.date) }}</span>
           <b />
         </div>
         <div class="tl-side right">
-          <div v-for="row in day.expenses" :key="row.id" class="tl-entry">
+          <button
+            v-for="row in day.expenses"
+            :key="row.id"
+            class="tl-entry"
+            :class="{ selectable: selecting, selected: isSelected(row.id) }"
+            type="button"
+            @click="selecting ? toggleSelect(row.id) : undefined"
+          >
+            <span v-if="selecting" class="tl-check" aria-hidden="true">{{ isSelected(row.id) ? '✓' : '' }}</span>
             <div class="tl-meta expense-meta">
               <i class="tl-badge" :style="{ background: iconOf(row.category_name_zh).bg }">
                 {{ iconOf(row.category_name_zh).mark }}
@@ -279,7 +408,7 @@ defineExpose({ reload })
             </div>
             <div class="tl-amount">{{ money(row.amount_yuan) }}</div>
             <div v-if="row.note" class="tl-note">{{ row.note }}</div>
-          </div>
+          </button>
         </div>
       </div>
     </div>

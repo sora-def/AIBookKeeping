@@ -29,8 +29,12 @@ _CATEGORY_HINTS: list[tuple[str, str, str, str]] = [
     ("报销", "income", "报销", "INC_REIMBURSE"),
     ("红包", "income", "红包", "INC_RED_PACKET"),
     ("兼职", "income", "兼职", "INC_PART_TIME"),
+    ("外快", "income", "兼职", "INC_PART_TIME"),
     ("奖金", "income", "奖金", "INC_BONUS"),
+    ("分红", "income", "奖金", "INC_BONUS"),
     ("投资", "income", "投资", "INC_INVEST"),
+    ("理财", "income", "投资", "INC_INVEST"),
+    ("股息", "income", "投资", "INC_INVEST"),
     ("衣服", "expense", "服饰", "EXP_CLOTHING"),
     ("衣物", "expense", "服饰", "EXP_CLOTHING"),
     ("服装", "expense", "服饰", "EXP_CLOTHING"),
@@ -77,7 +81,57 @@ _CATEGORY_HINTS: list[tuple[str, str, str, str]] = [
     ("学习", "expense", "学习", "EXP_STUDY"),
     ("话费", "expense", "通讯", "EXP_COMM"),
     ("通讯", "expense", "通讯", "EXP_COMM"),
+    ("日用品", "expense", "日用品", "EXP_DAILY"),
+    ("娱乐", "expense", "娱乐", "EXP_ENTERTAIN"),
+    ("食材", "expense", "食材", "EXP_INGREDIENT"),
+    ("人情", "expense", "人情", "EXP_SOCIAL"),
 ]
+
+# 明确收支语气（比物品关键词优先，避免「卖手机」被当成买数码）
+_INCOME_CUES = (
+    "收入了",
+    "收入",
+    "进账",
+    "到账",
+    "入账",
+    "挣了",
+    "赚了",
+    "赚到",
+    "收到",
+    "收款",
+    "回款",
+    "退款",
+    "卖了",
+    "卖掉",
+    "卖出",
+    "出售",
+    "变卖",
+    "卖卡",
+    "卖",
+    "转让费",
+    "稿费",
+    "分红",
+    "外快",
+    "earned",
+    "income",
+    "sold",
+)
+_EXPENSE_CUES = (
+    "花费了",
+    "花费",
+    "花了",
+    "支出了",
+    "支出",
+    "付了",
+    "支付",
+    "购买了",
+    "买了",
+    "消费",
+    "开销",
+    "spent",
+    "paid",
+    "bought",
+)
 
 
 def parse_amount_yuan(text: str) -> float | None:
@@ -146,9 +200,29 @@ def infer_note(text: str, category_name: str) -> str:
         "花费",
         "花了",
         "付了",
+        "支付",
         "购买了",
         "买了",
         "发了",
+        "收入了",
+        "收入",
+        "进账",
+        "到账",
+        "入账",
+        "挣了",
+        "赚了",
+        "赚到",
+        "收到",
+        "收款",
+        "回款",
+        "卖了",
+        "卖掉",
+        "卖出",
+        "出售",
+        "变卖",
+        "记账",
+        "记一笔",
+        "记一下",
         "我",
     ):
         raw = raw.replace(noise, "")
@@ -159,12 +233,50 @@ def infer_note(text: str, category_name: str) -> str:
     return raw[:40]
 
 
-# 带单位或「元/块」的金额；也认「花费了438」这种没写单位的说法。
+def detect_record_type(text: str) -> str | None:
+    """从语气判断收入/支出。收入线索优先于支出物品词。"""
+    raw = text or ""
+    lower = raw.lower()
+    income_hit = any((k in lower) if k.isascii() else (k in raw) for k in _INCOME_CUES)
+    expense_hit = any((k in lower) if k.isascii() else (k in raw) for k in _EXPENSE_CUES)
+    if income_hit and not expense_hit:
+        return "income"
+    if expense_hit and not income_hit:
+        return "expense"
+    if income_hit and expense_hit:
+        # 「卖了…买了」等少见冲突：看更靠后的线索
+        last_income = max(
+            ((lower.rfind(k) if k.isascii() else raw.rfind(k)) for k in _INCOME_CUES),
+            default=-1,
+        )
+        last_expense = max(
+            ((lower.rfind(k) if k.isascii() else raw.rfind(k)) for k in _EXPENSE_CUES),
+            default=-1,
+        )
+        if last_income >= last_expense:
+            return "income"
+        return "expense"
+    return None
+
+
+def _general_category(record_type: str, lang: str = "zh") -> tuple[str, str, str, str]:
+    if record_type == "income":
+        name = "General" if lang == "en" else "一般"
+        return ("一般", "income", name, "INC_GENERAL")
+    name = "General" if lang == "en" else "一般"
+    return ("一般", "expense", name, "EXP_GENERAL")
+
+
+# 带单位或「元/块」的金额；也认「花费了438 / 收入20 / 到账200」这种没写单位的说法。
 # 不把「10月6号」里的数字当成金额。
+_VERB_MONEY = (
+    r"花费了|花费|花了|付了|支付|支出了|支出|买了|"
+    r"收入了|收入|到账|进账|入账|挣了|赚了|赚到|收到|收款|回款|卖了|卖掉|卖出|出售"
+)
 _MONEY_RE = re.compile(
-    r"(\d+(?:\.\d+)?)\s*([wW万千])(?:\s*(?:元|块|rmb|cny|yuan))?"
-    r"|(\d+(?:\.\d+)?)\s*(?:元|块|rmb|cny|yuan)"
-    r"|(?:花费了|花费|花了|付了|支出了|支出)\s*(\d+(?:\.\d+)?)(?![\d.])(?!\s*(?:[wW万千元块]|rmb|cny|yuan))",
+    rf"(\d+(?:\.\d+)?)\s*([wW万千])(?:\s*(?:元|块|rmb|cny|yuan))?"
+    rf"|(\d+(?:\.\d+)?)\s*(?:元|块|rmb|cny|yuan)"
+    rf"|(?:{_VERB_MONEY})\s*(\d+(?:\.\d+)?)(?![\d.])(?!\s*(?:[wW万千元块]|rmb|cny|yuan|月|日|号))",
     re.IGNORECASE,
 )
 
@@ -195,8 +307,12 @@ _KEYWORD_MONEY_RE = _keyword_money_re()
 
 
 def collect_money_spans(text: str) -> list[_MoneySpan]:
-    """带单位的金额，以及「早餐15」这种紧跟在事项后面、没写元的数字。"""
+    """带单位的金额，以及「早餐15 / 收入20 / 卖卡30」这种紧跟动词或事项、没写元的数字。"""
     spans: list[_MoneySpan] = []
+
+    def _overlaps(start: int, end: int) -> bool:
+        return any(not (end <= span.start() or start >= span.end()) for span in spans)
+
     for match in _MONEY_RE.finditer(text):
         value = _money_value(match)
         if value > 0:
@@ -206,9 +322,20 @@ def collect_money_spans(text: str) -> list[_MoneySpan]:
         if value <= 0:
             continue
         start, end = match.span()
-        if any(not (end <= span.start() or start >= span.end()) for span in spans):
+        if _overlaps(start, end):
             continue
         spans.append(_MoneySpan(start, end, value))
+    # 「卖卡20」「兼职50」：有收支语气或分类词时，收下句末裸数字
+    if not spans and (detect_record_type(text) or _best_category(text)):
+        trailing = re.search(
+            r"(?<![年月日号/\-.])(\d+(?:\.\d+)?)\s*(?:元|块)?\s*$",
+            text,
+        )
+        if trailing:
+            value = float(trailing.group(1))
+            # 排除像「10月」残留；纯日期数字很少单独作句末金额且 >31 更像金额
+            if value > 0 and not re.search(r"\d+\s*月\s*$", text[: trailing.start() + 1] or ""):
+                spans.append(_MoneySpan(trailing.start(1), trailing.end(1), value))
     spans.sort(key=lambda item: item.start())
     return spans
 
@@ -267,8 +394,26 @@ def _category_label(name_zh: str, code: str, lang: str) -> str:
     return en_map.get(code, name_zh)
 
 
+def _resolve_hit(
+    clause: str,
+    *,
+    forced_type: str | None,
+    lang: str,
+) -> tuple[str, str, str, str] | None:
+    """物品关键词 + 语气类型。语气与物品冲突时，用对应类型的「一般」，备注保留原话。"""
+    hit = _best_category(clause)
+    if hit is not None:
+        key, record_type, name_zh, code = hit
+        if forced_type and forced_type != record_type:
+            return _general_category(forced_type, lang=lang)
+        return key, record_type, name_zh, code
+    if forced_type:
+        return _general_category(forced_type, lang=lang)
+    return None
+
+
 def infer_records(text: str, lang: str = "zh") -> list[InferredRecord]:
-    """按每个金额切一句。某一段对不上分类时返回空列表，避免只记下其中一笔。"""
+    """按每个金额切一句。能判断收支类型时，即使没有具体事项也落到「一般」。"""
     raw = (text or "").strip()
     if not raw:
         return []
@@ -276,23 +421,34 @@ def infer_records(text: str, lang: str = "zh") -> list[InferredRecord]:
     if not matches:
         return []
 
+    forced_type = detect_record_type(raw)
     found: list[InferredRecord] = []
     record_day = parse_record_date(raw).isoformat()
     cursor = 0
     for index, match in enumerate(matches):
         before = raw[cursor : match.end()]
-        hit = _best_category(before)
         clause = before
+        local_type = detect_record_type(before) or forced_type
+        hit = _resolve_hit(before, forced_type=local_type, lang=lang)
         if hit is None:
-            # 「花了 1000 元买耳机」：分类词在金额后面。用过的词要跳过，避免被下一笔再次匹配。
+            # 「花了 1000 元买耳机」：分类词在金额后面
             after_end = matches[index + 1].start() if index + 1 < len(matches) else len(raw)
             after = raw[match.end() : after_end]
-            hit = _best_category(after)
+            local_type = detect_record_type(before + after) or local_type
+            hit = _resolve_hit(after, forced_type=local_type, lang=lang)
             if hit is None:
+                # 多笔时某一笔无法判断就整句放弃，避免漏记造成误解
+                if len(matches) > 1:
+                    return []
                 return []
-            used = _keyword_end(after, hit[0])
-            clause = before + after[:used]
-            cursor = match.end() + used
+            # 一般分类没有关键词可推进 cursor；有关键词则跳过已用词
+            if hit[0] != "一般" and hit[0] in after:
+                used = _keyword_end(after, hit[0])
+                clause = before + after[:used]
+                cursor = match.end() + used
+            else:
+                clause = before + after
+                cursor = after_end
         else:
             cursor = match.end()
         _, record_type, name_zh, code = hit
